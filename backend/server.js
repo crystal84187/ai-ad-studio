@@ -62,11 +62,14 @@ Respond with ONLY this JSON. No explanation. No markdown. No code fences. Start 
 
     const text = message.content[0].text;
 
-    // Extract JSON
+    // Extract and clean JSON
     const start = text.indexOf("{");
     const end = text.lastIndexOf("}");
     if (start === -1 || end === -1) throw new Error("No JSON found in response");
-    const result = JSON.parse(text.slice(start, end + 1));
+    let jsonStr = text.slice(start, end + 1);
+    // Remove control characters that break JSON parsing
+    jsonStr = jsonStr.replace(/[\x00-\x1F\x7F]/g, " ");
+    const result = JSON.parse(jsonStr);
 
     // Save to database
     const stmt = db.prepare(
