@@ -7,13 +7,10 @@ const path = require("path");
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// ── Middleware ──
 app.use(cors({ origin: process.env.FRONTEND_URL || "*" }));
 app.use(express.json());
 
-// ── Database ──
 const db = new Database(path.join(__dirname, "ads.db"));
-
 db.exec(`
   CREATE TABLE IF NOT EXISTS ads (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -27,31 +24,24 @@ db.exec(`
   )
 `);
 
-// ── Anthropic ──
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-// ── Routes ──
-
-// Health check
 app.get("/", (req, res) => res.json({ status: "AI Ad Studio backend running" }));
 
-// Generate ad
 app.post("/generate", async (req, res) => {
   const { product, audience, tone, format, avatarStyle } = req.body;
-
   if (!product) return res.status(400).json({ error: "Product is required" });
 
-  const prompt = `You are an expert ad creative director. Create a complete ad package for this product.
-
+  const prompt = `Create an ad package for this product.
 Product: ${product}
 Audience: ${audience || "general consumers"}
 Tone: ${tone || "Energetic"}
-Format: ${format || "TikTok / Reels (15-30s)"}
-Avatar style: ${avatarStyle || "influencer"}
+Format: ${format || "TikTok"}
+Avatar: ${avatarStyle || "influencer"}
 
-Respond with ONLY this JSON. No explanation. No markdown. No code fences. Start with { end with }:
+Return ONLY valid JSON. Use simple words with no apostrophes, quotes, or special characters inside the values. Use plain English only.
 
-{"concept":{"hook":"punchy one-liner opening","idea":"core concept 2-3 sentences","emotion":"primary emotion","cta":"call to action","why":"why it works"},"script":{"duration":"30s","scenes":[{"time":"0-8s","visual":"what camera shows","vo":"spoken words","text":"overlay text"},{"time":"8-18s","visual":"what camera shows","vo":"spoken words","text":"overlay text"},{"time":"18-25s","visual":"what camera shows","vo":"spoken words","text":"overlay text"},{"time":"25-30s","visual":"what camera shows","vo":"spoken words","text":"overlay text"}]},"avatar":{"look":"physical appearance","wear":"wardrobe","place":"setting","voice":"voice style","move":"gestures","vibe":"energy"},"board":{"frames":[{"n":1,"ts":"0-8s","shot":"wide","desc":"visual description","text":"overlay","cut":"cut"},{"n":2,"ts":"8-18s","shot":"medium","desc":"visual description","text":"overlay","cut":"cut"},{"n":3,"ts":"18-25s","shot":"close-up","desc":"visual description","text":"overlay","cut":"fade"},{"n":4,"ts":"25-30s","shot":"wide","desc":"visual description","text":"overlay","cut":"fade"}]}}`;
+{"concept":{"hook":"hook line here","idea":"concept here","emotion":"emotion here","cta":"cta here","why":"reason here"},"script":{"duration":"30s","scenes":[{"time":"0-8s","visual":"visual here","vo":"voiceover here","text":"text here"},{"time":"8-18s","visual":"visual here","vo":"voiceover here","text":"text here"},{"time":"18-25s","visual":"visual here","vo":"voiceover here","text":"text here"},{"time":"25-30s","visual":"visual here","vo":"voiceover here","text":"text here"}]},"avatar":{"look":"look here","wear":"wear here","place":"place here","voice":"voice here","move":"move here","vibe":"vibe here"},"board":{"frames":[{"n":1,"ts":"0-8s","shot":"wide","desc":"desc here","text":"text here","cut":"cut"},{"n":2,"ts":"8-18s","shot":"medium","desc":"desc here","text":"text here","cut":"cut"},{"n":3,"ts":"18-25s","shot":"close-up","desc":"desc here","text":"text here","cut":"fade"},{"n":4,"ts":"25-30s","shot":"wide","desc":"desc here","text":"text here","cut":"fade"}]}}`;
 
   try {
     const message = await anthropic.messages.create({
@@ -60,18 +50,24 @@ Respond with ONLY this JSON. No explanation. No markdown. No code fences. Start 
       messages: [{ role: "user", content: prompt }]
     });
 
-    const text = message.content[0].text;
+    let text = message.content[0].text;
 
-    // Extract and clean JSON
+    // Strip anything before first { and after last }
     const start = text.indexOf("{");
     const end = text.lastIndexOf("}");
-    if (start === -1 || end === -1) throw new Error("No JSON found in response");
-    let jsonStr = text.slice(start, end + 1);
-    // Remove control characters that break JSON parsing
-    jsonStr = jsonStr.replace(/[\x00-\x1F\x7F]/g, " ");
-    const result = JSON.parse(jsonStr);
+    if (start === -1 || end === -1) throw new Error("No JSON in response: " + text.slice(0, 200));
+    
+    text = text.slice(start, end + 1);
+    
+    // Clean up common JSON-breaking characters
+    text = text
+      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
+      .replace(/\n/g, " ")
+      .replace(/\r/g, " ")
+      .replace(/\t/g, " ");
 
-    // Save to database
+    const result = JSON.parse(text);
+
     const stmt = db.prepare(
       "INSERT INTO ads (product, audience, tone, format, avatar_style, result) VALUES (?, ?, ?, ?, ?, ?)"
     );
@@ -85,7 +81,6 @@ Respond with ONLY this JSON. No explanation. No markdown. No code fences. Start 
   }
 });
 
-// Get all saved ads
 app.get("/ads", (req, res) => {
   try {
     const ads = db.prepare("SELECT id, product, tone, format, created_at FROM ads ORDER BY created_at DESC").all();
@@ -95,7 +90,6 @@ app.get("/ads", (req, res) => {
   }
 });
 
-// Get single ad
 app.get("/ads/:id", (req, res) => {
   try {
     const ad = db.prepare("SELECT * FROM ads WHERE id = ?").get(req.params.id);
@@ -107,7 +101,6 @@ app.get("/ads/:id", (req, res) => {
   }
 });
 
-// Delete ad
 app.delete("/ads/:id", (req, res) => {
   try {
     db.prepare("DELETE FROM ads WHERE id = ?").run(req.params.id);
@@ -117,18 +110,16 @@ app.delete("/ads/:id", (req, res) => {
   }
 });
 
-// Chat / refine
 app.post("/chat", async (req, res) => {
   const { product, concept, message } = req.body;
   if (!message) return res.status(400).json({ error: "Message required" });
-
   try {
     const reply = await anthropic.messages.create({
       model: "claude-haiku-4-5-20251001",
       max_tokens: 300,
       messages: [{
         role: "user",
-        content: `Product: ${product}. Ad concept: ${concept || ""}. User says: "${message}". Reply helpfully in under 120 words.`
+        content: `Product: ${product}. Concept: ${concept || ""}. User says: ${message}. Reply in under 100 words.`
       }]
     });
     res.json({ reply: reply.content[0].text });
